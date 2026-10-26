@@ -439,10 +439,19 @@ def monkey_patch_flashinfer_plan_staging_pageable():
 
     def unpin(wrapper):
         # The DCP prefill wrapper plans two FlashInfer wrappers.
-        for w in (wrapper, getattr(wrapper, "_context", None), getattr(wrapper, "_new_tokens", None)):
-            buf = getattr(w, "_pin_memory_int_workspace_buffer", None)
-            if buf is not None and buf.is_pinned():
-                w._pin_memory_int_workspace_buffer = torch.empty_like(buf, device="cpu")
+        staged = [
+            w
+            for w in (wrapper, getattr(wrapper, "_context", None), getattr(wrapper, "_new_tokens", None))
+            if hasattr(w, "_pin_memory_int_workspace_buffer")
+        ]
+        if not staged:
+            raise RuntimeError(
+                f"{type(wrapper).__name__} has no _pin_memory_int_workspace_buffer; FlashInfer's plan() staging "
+                "changed, so monkey_patch_flashinfer_plan_staging_pageable needs updating"
+            )
+        for w in staged:
+            if w._pin_memory_int_workspace_buffer.is_pinned():
+                w._pin_memory_int_workspace_buffer = torch.empty_like(w._pin_memory_int_workspace_buffer, device="cpu")
         return wrapper
 
     def pageable(get_wrapper):
