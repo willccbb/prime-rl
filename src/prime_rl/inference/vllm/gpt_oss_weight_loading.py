@@ -31,7 +31,10 @@ def patch_gpt_oss_weight_loading() -> None:
         expert_id,
         return_success=False,
     ):
-        if expert_id is None:
+        # MXFP4 checkpoints (the original gpt-oss release) keep vLLM's own loader, which copies
+        # combined tensors into kernel-padded parameters.
+        is_mxfp4 = self.quant_config is not None and self.quant_config.get_name() == "gpt_oss_mxfp4"
+        if expert_id is None and not is_mxfp4:
             if shard_id is not None:
                 raise ValueError("A combined expert tensor must already be sharded")
             if param.shape != loaded_weight.shape:
