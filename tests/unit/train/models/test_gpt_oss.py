@@ -7,6 +7,7 @@ import torch.distributed as dist
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss import GptOssForCausalLM as PrimeRLGptOssForCausalLM
 from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention, substitute_gpt_oss_ulysses_attention
+from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import GptOssExperts
 
 
 def _config() -> GptOssConfig:
@@ -43,6 +44,42 @@ def test_gpt_oss_checkpoint_conversion_roundtrip():
     assert roundtrip.keys() == expected_prime.keys()
     for name, tensor in roundtrip.items():
         torch.testing.assert_close(tensor, expected_prime[name])
+
+
+def test_mxfp4_checkpoint_conversion_roundtrip():
+    prefix = "model.layers.0.mlp.experts"
+    hf = {
+        f"{prefix}.gate_up_proj_blocks": torch.randint(0, 256, (2, 8, 3, 16), dtype=torch.uint8),
+        f"{prefix}.gate_up_proj_scales": torch.randint(0, 256, (2, 8, 3), dtype=torch.uint8),
+        f"{prefix}.gate_up_proj_bias": torch.randn(2, 8),
+        f"{prefix}.down_proj_blocks": torch.randint(0, 256, (2, 96, 1, 16), dtype=torch.uint8),
+        f"{prefix}.down_proj_scales": torch.randint(0, 256, (2, 96, 1), dtype=torch.uint8),
+        f"{prefix}.down_proj_bias": torch.randn(2, 96),
+    }
+    state_dict = dict(hf)
+    converter = GptOssExperts(prefix)
+    converter.hf_to_prime(state_dict)
+    assert torch.equal(state_dict[f"{prefix}.up_proj_blocks"], hf[f"{prefix}.gate_up_proj_blocks"][:, 1::2])
+    converter.prime_to_hf(state_dict)
+    assert state_dict.keys() == hf.keys()
+    for name, tensor in hf.items():
+        assert torch.equal(state_dict[name], tensor)
+
+
+def test_gpt_oss_mxfp4_experts_count_as_active_params():
+    from prime_rl.configs.trainer import LoRAConfig
+    from prime_rl.trainer.lora import apply_lora_to_model
+
+    counts = []
+    for quantization_config in (None, {"quant_method": "mxfp4"}):
+        config = _config()
+        config.hidden_size = config.intermediate_size = 64
+        config.quantization_config = quantization_config
+        with torch.device("meta"):
+            model = PrimeRLGptOssForCausalLM(config)
+        apply_lora_to_model(model, LoRAConfig(rank=8))
+        counts.append(model.num_active_params())
+    assert counts[0] == counts[1]
 
 
 def _eager_sink_attention(attention, query, key, value, cu_seqlens):

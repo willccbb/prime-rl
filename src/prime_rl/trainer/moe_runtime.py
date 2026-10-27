@@ -35,6 +35,7 @@ from prime_rl.trainer.models.layers.mega_moe import (
     reserve_sms_for_comm,
 )
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.mxfp4 import Mxfp4GroupedExperts
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
@@ -101,6 +102,9 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         if config.moe != MoERuntimeConfig():
             raise ValueError("A non-default model.moe runtime was configured, but the model has no custom MoE layers.")
         return
+
+    if parallel_dims.ep_enabled and any(isinstance(moe.experts, Mxfp4GroupedExperts) for moe in moe_layers):
+        raise ValueError("MXFP4 experts are not sharded by expert parallelism; train them with model.ep = 1")
 
     selected_moes = set(moe_layers)
     if config.moe.compute.apply_to != "all":
