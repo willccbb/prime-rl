@@ -8,10 +8,12 @@ from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     conversion_chain,
     is_hf_state_dict,
+    is_mxfp4_checkpoint,
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.mxfp4 import Mxfp4GroupedExperts
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -44,14 +46,23 @@ class GptOssDecoderLayer(nn.Module):
             route_scale=1.0,
             gate_bias=True,
         )
-        experts = GroupedExperts(
-            dim=config.hidden_size,
-            hidden_dim=config.intermediate_size,
-            num_experts=config.num_local_experts,
-            expert_type="gated",
-            activation="clamped_swiglu",
-            bias=True,
-        )
+        if is_mxfp4_checkpoint(config):
+            experts = Mxfp4GroupedExperts(
+                dim=config.hidden_size,
+                hidden_dim=config.intermediate_size,
+                num_experts=config.num_local_experts,
+                activation="clamped_swiglu",
+                bias=True,
+            )
+        else:
+            experts = GroupedExperts(
+                dim=config.hidden_size,
+                hidden_dim=config.intermediate_size,
+                num_experts=config.num_local_experts,
+                expert_type="gated",
+                activation="clamped_swiglu",
+                bias=True,
+            )
         experts.init_weights(config.initializer_range)
         self.mlp = MoE(
             router=router,

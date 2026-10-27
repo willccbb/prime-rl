@@ -59,6 +59,7 @@ from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.mxfp4 import Mxfp4GroupedExperts
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
@@ -841,6 +842,11 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
 
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
+    elif any(isinstance(module, Mxfp4GroupedExperts) for module in model.modules()):
+        raise ValueError(
+            f"{config.name} stores its experts in MXFP4, which the trainer keeps frozen. "
+            "Train with [model.lora], or full fine-tune from a bf16 checkpoint."
+        )
     return frozen_vision_encoder
 
 
