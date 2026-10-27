@@ -69,7 +69,10 @@ class GptOssAttention(nn.Module):
         max_seqlen: int,
     ) -> torch.Tensor:
         window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (None, None)
-        output, _ = self.flash_attn(
+        # FA4's SM12x kernels have no learnable-sink support, so there the sink is folded into
+        # the softmax afterwards: out * sigmoid(lse - sink) equals attention with the sink logit.
+        sink_in_kernel = torch.cuda.get_device_capability(query.device)[0] != 12
+        output, lse = self.flash_attn(
             query,
             key,
             value,
@@ -80,9 +83,13 @@ class GptOssAttention(nn.Module):
             softmax_scale=self.scaling,
             causal=True,
             window_size=window_size,
-            learnable_sink=self.sinks,
+            learnable_sink=self.sinks if sink_in_kernel else None,
+            return_lse=not sink_in_kernel,
         )
-        return output
+        if sink_in_kernel:
+            return output
+        sink_scale = torch.sigmoid(lse.transpose(0, 1) - self.sinks.float().unsqueeze(0)).unsqueeze(-1)
+        return (output.float() * sink_scale).to(output.dtype)
 
     def forward(
         self,
