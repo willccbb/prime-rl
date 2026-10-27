@@ -30,6 +30,7 @@ def apply_shared_vllm_patches():
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_gpt_oss_lm_head_lora()
     monkey_patch_packed_sampling_masks()
     monkey_patch_engine_gc()
     monkey_patch_packed_aux_outputs()
@@ -931,6 +932,18 @@ def _patch_lora_key_prefix():
         )
 
     LoRAModel.from_local_checkpoint = classmethod(_patched_from_local_checkpoint)
+
+
+def monkey_patch_gpt_oss_lm_head_lora():
+    """Let LoRA adapters for gpt-oss adapt the unembedding.
+
+    vLLM serves LoRA on ``lm_head`` (through ``LogitsProcessorWithLoRA``) for models that list it in
+    ``embedding_modules``, as Llama and Qwen3 do; ``GptOssForCausalLM`` lists none, so adapters that
+    train the unembedding, such as Tinker's, are rejected at load.
+    """
+    from vllm.model_executor.models.gpt_oss import GptOssForCausalLM
+
+    GptOssForCausalLM.embedding_modules = {"lm_head": "output_embeddings"}
 
 
 def monkey_patch_minimax_m2_for_lora():
