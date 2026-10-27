@@ -120,6 +120,59 @@ def test_flash_attn_4_op_propagates_lse_gradient():
     torch.testing.assert_close(actual, expected)
 
 
+def _eager_sink_attention(attention, query, key, value, cu_seqlens):
+    """Reference GPT-OSS attention: causal, sliding window, GQA, plus a sink logit per head."""
+    groups = attention.num_attention_heads // attention.num_key_value_heads
+    outputs = []
+    for start, end in zip(cu_seqlens[:-1].tolist(), cu_seqlens[1:].tolist()):
+        q = query[start:end].float().transpose(0, 1)
+        k = key[start:end].float().repeat_interleave(groups, dim=1).transpose(0, 1)
+        v = value[start:end].float().repeat_interleave(groups, dim=1).transpose(0, 1)
+        scores = q @ k.transpose(-1, -2) * attention.scaling
+        positions = torch.arange(end - start, device=query.device)
+        distance = positions[:, None] - positions[None, :]
+        mask = distance >= 0
+        if attention.sliding_window is not None:
+            mask &= distance < attention.sliding_window
+        scores = scores.masked_fill(~mask, float("-inf"))
+        sinks = attention.sinks.float()[:, None, None].expand(-1, end - start, 1)
+        probs = torch.cat([scores, sinks], dim=-1).softmax(dim=-1)[..., :-1]
+        outputs.append((probs @ v).transpose(0, 1))
+    return torch.cat(outputs)
+
+
+@pytest.mark.gpu
+def test_gpt_oss_attention_matches_eager_reference():
+    if torch.cuda.get_device_capability()[0] not in (9, 10, 11, 12):
+        pytest.skip("GPT-OSS attention uses FA4")
+    config = _config()
+    config.head_dim = 64
+    config.sliding_window = 128
+    torch.manual_seed(0)
+    attention = GptOssAttention(config, layer_idx=0).cuda().to(torch.bfloat16)
+    # Packed sequences whose boundaries are not tile-aligned exercise varlen GQA dK/dV accumulation.
+    cu_seqlens = torch.tensor([0, 333, 1000, 1001, 2048], device="cuda", dtype=torch.int32)
+    total = int(cu_seqlens[-1])
+    query = torch.randn(total, 4, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    key = torch.randn(total, 2, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    value = torch.randn(total, 2, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    max_seqlen = int((cu_seqlens[1:] - cu_seqlens[:-1]).max())
+
+    compiled = torch.compile(attention.compute_attention, fullgraph=True)
+    output = compiled(query, key, value, cu_seqlens, max_seqlen)
+    grad_output = torch.randn_like(output, dtype=torch.float32)
+    inputs = (query, key, value, attention.sinks)
+    grads = torch.autograd.grad((output.float() * grad_output).sum(), inputs)
+
+    reference = _eager_sink_attention(attention, query, key, value, cu_seqlens)
+    reference_grads = torch.autograd.grad((reference * grad_output).sum(), inputs)
+
+    torch.testing.assert_close(output.float(), reference, rtol=2e-2, atol=2e-2)
+    for grad, reference_grad in zip(grads, reference_grads):
+        relative_error = (grad.float() - reference_grad.float()).norm() / reference_grad.float().norm()
+        assert relative_error < 1e-2
+
+
 @pytest.fixture(scope="module")
 def cp_process_group():
     if int(os.environ.get("WORLD_SIZE", 1)) != 2:
