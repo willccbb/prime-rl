@@ -34,6 +34,13 @@ except ImportError:
     flash_attn_4_varlen_func = None  # type: ignore
     _flash_attn_bwd = _flash_attn_fwd = None  # type: ignore
 
+# Outside the ImportError guard: if FA4 moves what the patch imports, fail here instead of
+# silently running without FA4.
+if flash_attn_4_varlen_func is not None:
+    from prime_rl.trainer.models.layers.flash_attn_4_patch import patch_flash_attn_4_sm80_backward
+
+    patch_flash_attn_4_sm80_backward()
+
 
 # Each FlashAttention version's flash_attn_varlen_func is a Python autograd.Function that Dynamo
 # cannot trace (FA2 and FA3 also reject the same cu_seqlens tensor passed as both cu_seqlens_q and
@@ -53,7 +60,7 @@ def _flash_attn_4_varlen(
     window_size_left: int | None,
     window_size_right: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    out, lse, _, _ = _flash_attn_fwd(
+    out, lse, *_ = _flash_attn_fwd(
         q,
         k,
         v,
