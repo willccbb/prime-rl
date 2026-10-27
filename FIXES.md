@@ -76,9 +76,18 @@ Branch: `gpt-oss-lm-head-lora`
 - **Tests:** none; loading a Tinker adapter on the eval server checks the load.
 - **On main:** no.
 
+### prompt_too_long counts as truncation
+Branch: `prompt-too-long-truncates`
+
+- **Broke:** verifiers (`context-overflow-truncates`, in verifiers `swarm-rl/dev`) now stops a rollout whose harness dies on a pre-flight context overflow as `prompt_too_long`, which `Trace.is_truncated` counts as truncated, but the trace index and the dashboard keep their own copies of the truncating stops and missed it.
+- **Fix:** add `prompt_too_long` to `TRUNCATING_STOPS` in `monitors/file/traces/index.py` and `dashboard/static/app.js`. `orchestrator/metrics.py` already counts it.
+- **Note:** a train rollout that overflows is now scored (the basics checks fail it), while a train rollout that times out is still dropped as an error (`orchestrator/dispatcher.py`).
+- **Tests:** `tests/unit/test_dashboard_timeline.py::test_context_overflow_counts_as_truncated`.
+- **On main:** no.
+
 ## Carried elsewhere
 
-- **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release) and `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it), among others.
+- **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release), `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it) and `context-overflow-truncates` (a harness dying on a context overflow stops the rollout as `prompt_too_long` and it is scored), among others.
 - **renderers `swarm-rl/dev`:** `harmony-dedupe`.
 - **Prime Agent `swarm-rl/dev`:** releases built from Prime Agent `main` plus its own topic branches.
 - **Recipe:** gpt-oss rollouts train as one sequence per context with `[orchestrator.renderer] auto_drop_analysis = false`.
