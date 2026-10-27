@@ -18,6 +18,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     BF16ExpertCompute,
     ExpertCompute,
     FusedDispatchExpertCompute,
+    to_local,
 )
 from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
@@ -87,6 +88,7 @@ class GroupedExperts(nn.Module):
     ):
         super().__init__()
         self.num_experts = num_experts
+        self.dim = dim
         self.hidden_dim = hidden_dim
         self.gate_proj = nn.Parameter(torch.empty(num_experts, hidden_dim, dim)) if expert_type == "gated" else None
         self.up_proj = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
@@ -110,6 +112,11 @@ class GroupedExperts(nn.Module):
     @property
     def token_group_alignment(self) -> int:
         return self.compute.token_group_alignment
+
+    def project(self, proj: str, x: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+        """``x [tokens, in] @ W[e]^T`` per expert group for one of the unfused projections."""
+        weight = to_local(getattr(self, proj)).bfloat16().transpose(-2, -1)
+        return torch._grouped_mm(x.bfloat16(), weight, offs=offsets)
 
     def forward(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor:
         """``routing`` is ``num_tokens_per_expert`` for dispatched tokens grouped by expert, or

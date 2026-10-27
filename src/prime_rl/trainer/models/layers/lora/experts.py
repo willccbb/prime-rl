@@ -57,7 +57,7 @@ class LoRAGroupedExperts(LoRAModule):
         }
 
     def _project(self, proj: str, x: torch.Tensor, lora_x: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
-        base = _grouped_mm(x, getattr(self.base_layer, proj), offsets)
+        base = self.base_layer.project(proj, x, offsets)
         lora = _grouped_mm(
             _grouped_mm(lora_x, getattr(self, f"{proj}_lora_A"), offsets), getattr(self, f"{proj}_lora_B"), offsets
         )
@@ -81,13 +81,15 @@ class LoRAGptOssGroupedExperts(LoRAModule):
 
     def __init__(self, base_layer: GroupedExperts, rank: int, alpha: float = 32.0, dropout: float = 0.0):
         super().__init__(base_layer, rank, alpha, dropout)
-        self.num_experts, intermediate_size, hidden_size = base_layer.up_proj.shape
+        n, hidden_size, intermediate_size = base_layer.num_experts, base_layer.dim, base_layer.hidden_dim
+        self.num_experts = n
         _check_grouped_mm_dims(rank, hidden_size, intermediate_size)
-        n, up, down = self.num_experts, base_layer.up_proj, base_layer.down_proj
-        self.gate_up_lora_A = lora_parameter(n, rank, hidden_size, like=up)
-        self.gate_up_lora_B = lora_parameter(n, 2 * intermediate_size, rank, like=up)
-        self.down_lora_A = lora_parameter(n, rank, intermediate_size, like=down)
-        self.down_lora_B = lora_parameter(n, hidden_size, rank, like=down)
+        # The biases share the expert weights' device and dtype, also when the weights are MXFP4 bytes.
+        like = base_layer.up_proj_bias
+        self.gate_up_lora_A = lora_parameter(n, rank, hidden_size, like=like)
+        self.gate_up_lora_B = lora_parameter(n, 2 * intermediate_size, rank, like=like)
+        self.down_lora_A = lora_parameter(n, rank, intermediate_size, like=like)
+        self.down_lora_B = lora_parameter(n, hidden_size, rank, like=like)
         self.reset_parameters()
 
     def adapter_state_dict(self) -> dict[str, torch.Tensor]:
@@ -124,9 +126,9 @@ class LoRAGptOssGroupedExperts(LoRAModule):
             return _grouped_mm(_grouped_mm(x, lora_A, offsets), lora_B, offsets)
 
         lora_x = self.lora_dropout(x)
-        gate = _grouped_mm(x, base.gate_proj, offsets)
+        gate = base.project("gate_proj", x, offsets)
         gate = gate + bias(base.gate_proj_bias, gate)
-        up = _grouped_mm(x, base.up_proj, offsets)
+        up = base.project("up_proj", x, offsets)
         up = up + bias(base.up_proj_bias, up)
 
         gate_up_lora = lora(lora_x, self.gate_up_lora_A, self.gate_up_lora_B)
@@ -134,6 +136,6 @@ class LoRAGptOssGroupedExperts(LoRAModule):
         up = up + self.scaling * gate_up_lora[..., 1::2]
 
         h = base.activation.apply(gate, up)
-        out = _grouped_mm(h, base.down_proj, offsets)
+        out = base.project("down_proj", h, offsets)
         out = out + bias(base.down_proj_bias, out)
         return (out + self.scaling * lora(self.lora_dropout(h), self.down_lora_A, self.down_lora_B)).type_as(x)

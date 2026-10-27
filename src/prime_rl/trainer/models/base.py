@@ -5,6 +5,7 @@ from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.mxfp4 import Mxfp4GroupedExperts
 from prime_rl.utils.cp import CPContext
 
 
@@ -22,11 +23,14 @@ def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None 
 
     Every parameter counts (attention and MLP projections, norms, routers, the lm_head) except the
     routed experts a token skips (`1 - top_k / num_experts` of them) and embedding tables, which
-    count only when tied to the lm_head.
+    count only when tied to the lm_head. Frozen MXFP4 expert weights, kept in buffers, count by
+    the same rule when counting the whole model.
     """
+    count_packed = params is None
     params = {id(param): param for param in (model.parameters() if params is None else params)}
     lm_head_params = {id(param) for param in model.lm_head.parameters()}
     inactive = 0
+    packed_active = 0
     for module in model.modules():
         if isinstance(module, nn.Embedding):
             inactive += sum(
@@ -39,7 +43,11 @@ def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None 
             num_experts, top_k = module.experts.num_experts, module.router.top_k
             expert_params = sum(param.numel() for param in module.experts.parameters() if id(param) in params)
             inactive += expert_params * (num_experts - top_k) // num_experts
-    return sum(param.numel() for param in params.values()) - inactive
+            # A LoRA wrapper keeps the experts as its base layer.
+            experts = getattr(module.experts, "base_layer", module.experts)
+            if count_packed and isinstance(experts, Mxfp4GroupedExperts):
+                packed_active += experts.packed_weight_numel() * top_k // num_experts
+    return sum(param.numel() for param in params.values()) - inactive + packed_active
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
