@@ -32,6 +32,7 @@ def apply_shared_vllm_patches():
     monkey_patch_minimax_m2_for_lora()
     monkey_patch_packed_sampling_masks()
     monkey_patch_engine_gc()
+    monkey_patch_flashinfer_plan_staging_pageable()
     monkey_patch_packed_aux_outputs()
     monkey_patch_aux_output_store()
     from prime_rl.inference.vllm.request_replay import patch_request_replay
@@ -411,6 +412,58 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+def monkey_patch_flashinfer_plan_staging_pageable():
+    """Give vLLM's FlashInfer attention wrappers a pageable ``plan()`` staging buffer.
+
+    ``plan()`` writes its schedule into one reused pinned host buffer per wrapper and copies it to
+    the GPU with a raw ``cudaMemcpyAsync``, which reads a pinned source only when the GPU reaches
+    the copy. With async scheduling vLLM plans step N+1 while step N is still queued, and since
+    vLLM 0.31 (#57214) nothing makes the host wait in between for models without speculative
+    decoding. When the GPU lags the host (e.g. while another process shares it), step N's
+    attention kernels run with step N+1's schedule and write out of bounds: an illegal memory
+    access that kills the engine. A pageable source is read when the copy is issued, so the next
+    ``plan()`` can't reach it.
+
+    Same fix as https://github.com/vllm-project/vllm/pull/59493. Upstream issues:
+    https://github.com/vllm-project/vllm/issues/61239,
+    https://github.com/flashinfer-ai/flashinfer/issues/6533.
+    """
+    import functools
+
+    from vllm.v1.attention.backends.flashinfer import FlashInferMetadataBuilder
+
+    if getattr(FlashInferMetadataBuilder._get_prefill_wrapper, "_prime_rl_pageable_plan_staging", False):
+        return
+
+    def unpin(wrapper):
+        # The DCP prefill wrapper plans two FlashInfer wrappers.
+        staged = [
+            w
+            for w in (wrapper, getattr(wrapper, "_context", None), getattr(wrapper, "_new_tokens", None))
+            if hasattr(w, "_pin_memory_int_workspace_buffer")
+        ]
+        if not staged:
+            raise RuntimeError(
+                f"{type(wrapper).__name__} has no _pin_memory_int_workspace_buffer; FlashInfer's plan() staging "
+                "changed, so monkey_patch_flashinfer_plan_staging_pageable needs updating"
+            )
+        for w in staged:
+            if w._pin_memory_int_workspace_buffer.is_pinned():
+                w._pin_memory_int_workspace_buffer = torch.empty_like(w._pin_memory_int_workspace_buffer, device="cpu")
+        return wrapper
+
+    def pageable(get_wrapper):
+        @functools.wraps(get_wrapper)
+        def wrapped(self, *args, **kwargs):
+            return unpin(get_wrapper(self, *args, **kwargs))
+
+        wrapped._prime_rl_pageable_plan_staging = True
+        return wrapped
+
+    FlashInferMetadataBuilder._get_prefill_wrapper = pageable(FlashInferMetadataBuilder._get_prefill_wrapper)
+    FlashInferMetadataBuilder._get_decode_wrapper = pageable(FlashInferMetadataBuilder._get_decode_wrapper)
 
 
 def monkey_patch_minimax_m2_think_end_passthrough():
