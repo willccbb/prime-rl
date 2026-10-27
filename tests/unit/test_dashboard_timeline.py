@@ -1,5 +1,5 @@
 from prime_rl.dashboard.server import project_episode_timeline
-from prime_rl.monitors.file.traces.index import index_row, summarize_episode
+from prime_rl.monitors.file.traces.index import index_row, summarize_episode, trace_truncated
 
 
 def _node(
@@ -325,3 +325,8 @@ def test_semantic_timeline_marks_cancelled_and_failed_subagents() -> None:
     cancelled = next(l for l in timeline["semantic_lanes"] if l["label"] == "subagent 2 · context 0")
     assert cancelled["context"]["outcome"] == "cancelled"
     assert "subagent_cancel" in {e["type"] for e in timeline["semantic_edges"]}
+
+
+def test_context_overflow_counts_as_truncated() -> None:
+    assert trace_truncated({"stop_condition": "prompt_too_long"})
+    assert not trace_truncated({"stop_condition": "completed"})
