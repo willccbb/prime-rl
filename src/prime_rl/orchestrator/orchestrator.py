@@ -218,7 +218,7 @@ class Orchestrator:
             config.model.client,
             model_name=config.model.name,
             train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
+            eval_client_type="renderer",
             renderer_config=config.renderer,
         )
         self.admin_plane = setup_admin_plane(
