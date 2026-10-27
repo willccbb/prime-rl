@@ -72,7 +72,7 @@ Branch: `gpt-oss-lm-head-lora` (cut from a newer `main` than this branch's base;
 - **Broke:** vLLM applies LoRA to `lm_head` only for models that list it in `embedding_modules`, and `GptOssForCausalLM` lists none, so Tinker gpt-oss adapters, which also train the unembedding, failed to load ("expected target modules in {...} but received ['lm_head']").
 - **Fix:** declare `lm_head` as gpt-oss's output embedding, as Llama and Qwen3 do. Base requests and adapters without an `lm_head` part get a zero delta.
 - **Evidence:** a converted Tinker rank-32 adapter loads, and served logprobs match Tinker's sampler at mismatch KL about .0014 in both directions, against .12 for the base model, so the adapter's attention and expert parts are reproduced. On that checkpoint the unembedding part's effect is below the noise, so its correctness is not separately shown.
-- **Limit:** vLLM's `prompt_logprobs` path maps the logits LoRA per request, not per token, so teacher-forced scoring leaves an adapter's unembedding part out. Sampling applies it.
+- **Limit:** vLLM's `prompt_logprobs` path maps the logits LoRA per request, not per token, so teacher-forced scoring leaves an adapter's unembedding part out, and by a reading of the code (not seen live) can add it to the first positions of another request's prompt logprobs in the same batch, base-model requests included. Sampling applies it correctly. Every gpt-oss LoRA server now runs logits through the LoRA path, about 2% more logits compute.
 - **Tests:** none; loading a Tinker adapter on the eval server checks the load.
 - **On main:** no.
 
