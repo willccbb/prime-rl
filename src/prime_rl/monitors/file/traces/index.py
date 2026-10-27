@@ -30,7 +30,15 @@ def episode_kind(rec: dict) -> str:
 
 
 TRUNCATING_STOPS = frozenset(
-    {"max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"}
+    {
+        "max_turns",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_total_tokens",
+        "max_turn_tokens",
+        "compaction_failed",
+        "prompt_too_long",
+    }
 )
 """The stop conditions ``verifiers.v1.Trace.is_truncated`` counts as truncation."""
 

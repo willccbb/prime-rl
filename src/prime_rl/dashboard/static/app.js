@@ -4567,10 +4567,10 @@ function metaRow(key, value, asId = false) {
   );
 }
 
-const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"]);
+const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed", "prompt_too_long"]);
 
-/* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
-   length-finished final response */
+/* mirrors verifiers Trace.is_truncated (not serialized): framework limits, a context
+   overflow, or a length-finished final response */
 function traceTruncated(trace) {
   if (TRUNCATING_STOPS.has(trace.stop_condition)) return true;
   const last = [...(trace.calls || [])].reverse().find((c) => !c.error);
