@@ -205,6 +205,8 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
+    if config.router.disable_circuit_breaker:
+        cmd.append("--disable-circuit-breaker")
     return subprocess.Popen(cmd)
 
 
