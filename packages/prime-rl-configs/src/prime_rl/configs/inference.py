@@ -299,6 +299,9 @@ class VllmRouterConfig(BaseConfig):
     policy: str = "sticky_least_loaded"
     """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
 
+    disable_circuit_breaker: bool = False
+    """Turn off the router's per-worker circuit breaker. With a single worker there is nowhere to fail over to, so an open breaker turns a brief run of failed requests into a full outage until it half-opens (60 s by default)."""
+
 
 class LlmdRouterConfig(BaseConfig):
     """llm-d router backend (EPP + Envoy)."""
