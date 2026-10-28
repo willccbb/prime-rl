@@ -95,7 +95,7 @@ Branch: `router-disable-circuit-breaker`
 
 ## Carried elsewhere
 
-- **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release), `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it) and `context-overflow-truncates` (a harness dying on a context overflow stops the rollout as `prompt_too_long` and it is scored), among others.
-- **renderers `swarm-rl/dev`:** `harmony-dedupe`, and `gpt-oss-sampled-tool-calls` (re-rendered tool calls take the header gpt-oss samples, channel-first with `<|constrain|>json` or `code`).
+- **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release), `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it), `context-overflow-truncates` (a harness dying on a context overflow stops the rollout as `prompt_too_long` and it is scored) and `train-client-arguments-text` (the train client returns tool-call arguments as the model wrote them), among others. That last one sources renderers from a git revision, which the `renderers` entry in `override-dependencies` replaces with `deps/renderers`.
+- **renderers `swarm-rl/dev`:** `harmony-dedupe`, `gpt-oss-sampled-tool-calls` (re-rendered tool calls take the header gpt-oss samples, channel-first with `<|constrain|>json` or `code`) and `gpt-oss-tool-call-arguments-text` (parsed tool calls carry their argument text as sampled).
 - **Prime Agent `swarm-rl/dev`:** releases built from Prime Agent `main` plus its own topic branches.
 - **Recipe:** gpt-oss rollouts train as one sequence per context with `[orchestrator.renderer] auto_drop_analysis = false`.
