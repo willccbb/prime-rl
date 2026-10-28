@@ -85,9 +85,17 @@ Branch: `prompt-too-long-truncates`
 - **Tests:** `tests/unit/test_dashboard_timeline.py::test_context_overflow_counts_as_truncated`.
 - **On main:** no.
 
+### Router circuit breaker off for single-worker runs
+Branch: `router-disable-circuit-breaker`
+
+- **Broke:** vllm-router opens a worker's circuit breaker after 10 consecutive failures and holds it open for 60 s. A dev-box run has one worker, so a brief burst of failed requests turned into a minute in which every request failed with "No available workers".
+- **Fix:** `[inference.router] disable_circuit_breaker = true` passes `--disable-circuit-breaker` to the router, in the local and SLURM launchers. It defaults to off. The router union needs its `type` alongside it (`--inference.router.type vllm-router --inference.router.disable-circuit-breaker`). Health checks can still take a dead worker out.
+- **Tests:** none; the local command and the SLURM template were checked with the option on and off.
+- **On main:** no.
+
 ## Carried elsewhere
 
 - **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release), `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it) and `context-overflow-truncates` (a harness dying on a context overflow stops the rollout as `prompt_too_long` and it is scored), among others.
-- **renderers `swarm-rl/dev`:** `harmony-dedupe`.
+- **renderers `swarm-rl/dev`:** `harmony-dedupe`, and `gpt-oss-sampled-tool-calls` (re-rendered tool calls take the header gpt-oss samples, channel-first with `<|constrain|>json` or `code`).
 - **Prime Agent `swarm-rl/dev`:** releases built from Prime Agent `main` plus its own topic branches.
 - **Recipe:** gpt-oss rollouts train as one sequence per context with `[orchestrator.renderer] auto_drop_analysis = false`.
