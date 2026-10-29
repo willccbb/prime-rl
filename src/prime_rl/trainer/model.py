@@ -944,6 +944,12 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
+    # FSDP computes in bf16, so a frozen weight kept in optimization_dtype is only ever cast down,
+    # once per forward and again per backward. Storing it in bf16 skips the casts and halves its memory.
+    for param in model.parameters():
+        if not param.requires_grad:
+            param.data = param.data.to(torch.bfloat16)
+
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
