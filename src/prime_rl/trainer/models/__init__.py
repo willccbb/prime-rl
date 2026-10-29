@@ -6,6 +6,7 @@ from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+from transformers.models.gpt2.configuration_gpt2 import GPT2Config
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
@@ -15,6 +16,7 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForC
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
+from prime_rl.trainer.models.gpt2 import GPT2ForCausalLM
 from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig, LagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and_contiguous
@@ -86,6 +88,7 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (Qwen3_8FlashNextTextConfig, Qwen3_8FlashNextForCausalLM),
     (Qwen3_8FlashNextConfig, Qwen3_8FlashNextForCausalLM),
     (GptOssConfig, GptOssForCausalLM),
+    (GPT2Config, GPT2ForCausalLM),
 )
 for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS:
     _CUSTOM_CAUSAL_LM_MAPPING.register(config_cls, model_cls, exist_ok=True)

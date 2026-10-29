@@ -47,10 +47,20 @@ class Silu(Activation):
         return F.silu(gate) * up
 
 
-ActivationType = Literal["silu", "relu2", "clamped_swiglu"]
+class GeluTanh(Activation):
+    """Tanh-approximated GELU on an ungated projection (GPT-2's ``gelu_new``)."""
+
+    @staticmethod
+    def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
+        assert gate is None, "GeluTanh is an ungated activation"
+        return F.gelu(up, approximate="tanh")
+
+
+ActivationType = Literal["silu", "relu2", "clamped_swiglu", "gelu_tanh"]
 
 ActivationDispatch: dict[ActivationType, type[Activation]] = {
     "clamped_swiglu": ClampedSwiglu,
     "silu": Silu,
     "relu2": Relu2,
+    "gelu_tanh": GeluTanh,
 }
