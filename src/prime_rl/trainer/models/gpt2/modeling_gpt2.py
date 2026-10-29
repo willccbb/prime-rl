@@ -26,7 +26,7 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.gpt2.converting_gpt2 import conversion_chain, is_hf_state_dict, is_prime_state_dict
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.norms import LayerNorm
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -169,6 +169,7 @@ class GPT2ForCausalLM(GPT2PreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
+        support: Optional[TokenSupport] = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
@@ -185,6 +186,8 @@ class GPT2ForCausalLM(GPT2PreTrainedModel, GenerationMixin):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
+        support (`TokenSupport`, *optional*):
+            Per-token sampler support (CSR rows), forwarded to the wrapped LM head.
         """
         assert use_cache is None, "use_cache is not supported for custom gpt2"
         assert past_key_values is None, "past_key_values is not supported for custom gpt2"
@@ -206,6 +209,7 @@ class GPT2ForCausalLM(GPT2PreTrainedModel, GenerationMixin):
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
+            support=support,
         )
 
     def init_buffers_post_meta(self):
