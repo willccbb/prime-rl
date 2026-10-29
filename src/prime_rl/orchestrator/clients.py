@@ -67,8 +67,12 @@ class InferenceClient:
         self._scorer = PrefillScorer()
         # Managed routed deployments set admin_base_url so engine admin traffic
         # bypasses the client-facing router. External and frozen clients do not.
+        # Every finished rollout waits on one /finish_session post, so this client
+        # takes httpx's default pool rather than the admin plane's four connections.
         self._session_client = (
-            setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))[0]
+            setup_admin_clients(
+                client_config.model_copy(update={"admin_base_url": None}), limits=httpx.Limits()
+            )[0]
             if client_config.admin_base_url is not None
             else None
         )
@@ -272,7 +276,10 @@ def setup_client(
     return config_cls(**client_config.model_dump(include=set(BaseClientConfig.model_fields)), **renderer_extra)
 
 
-def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
+def setup_admin_clients(
+    client_config: ClientConfig,
+    limits: httpx.Limits = httpx.Limits(max_connections=4, max_keepalive_connections=1),
+) -> list[AsyncClient]:
     """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
@@ -294,7 +301,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         return AsyncClient(
             base_url=base_url,
             headers=headers,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
+            limits=limits,
             timeout=httpx.Timeout(None),
         )
 
