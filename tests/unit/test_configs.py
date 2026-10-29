@@ -751,6 +751,31 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     assert reloaded == config
 
 
+def test_colocated_inference_shares_the_trainer_gpu():
+    deployment = {"type": "single_node", "gpus_per_node": 1, "num_train_gpus": 1, "num_infer_gpus": 1, "colocate": True}
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+            "weight_broadcast": {"type": "filesystem"},
+            "deployment": deployment,
+        }
+    )
+    assert config.deployment.colocate
+
+    with pytest.raises(ValidationError, match="filesystem weight broadcast"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {},
+                "weight_broadcast": {"type": "nccl"},
+                "deployment": deployment,
+            }
+        )
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
