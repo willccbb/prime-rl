@@ -118,9 +118,20 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     num_infer_gpus: int = 1
     """GPUs allocated to inference."""
 
+    colocate: bool = False
+    """Run inference on the trainer's first ``num_infer_gpus`` GPUs instead of its own. For models small enough that both fit on one device; size ``inference.vllm.gpu_memory_utilization`` to leave the trainer its memory. Requires filesystem weight broadcast."""
+
     @model_validator(mode="after")
     def validate_gpu_count(self):
-        total = self.num_train_gpus + self.num_infer_gpus
+        if self.colocate:
+            if self.num_infer_gpus > self.num_train_gpus:
+                raise ValueError(
+                    f"Colocated inference ({self.num_infer_gpus} GPUs) must fit on the trainer's "
+                    f"{self.num_train_gpus} GPUs."
+                )
+            total = self.num_train_gpus
+        else:
+            total = self.num_train_gpus + self.num_infer_gpus
         if total > self.gpus_per_node:
             raise ValueError(
                 f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer)"
@@ -291,6 +302,10 @@ class RLConfig(BaseConfig):
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
             if self.trainer.weight_broadcast.type == "nccl":
+                if self.deployment.colocate:
+                    raise ValueError(
+                        "Colocated inference needs filesystem weight broadcast: NCCL cannot pair two ranks on one GPU."
+                    )
                 if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
                     raise ValueError(
                         "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."

@@ -128,7 +128,11 @@ def rl_local(config: RLConfig):
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
-    infer_gpu_ids, trainer_gpu_ids = partition_gpus(num_infer_gpus, config.deployment.num_train_gpus)
+    if config.deployment.colocate:
+        _, trainer_gpu_ids = partition_gpus(0, config.deployment.num_train_gpus)
+        infer_gpu_ids = trainer_gpu_ids[:num_infer_gpus]
+    else:
+        infer_gpu_ids, trainer_gpu_ids = partition_gpus(num_infer_gpus, config.deployment.num_train_gpus)
     logger.info(f"Using local->physical GPU mapping: {dict(enumerate(infer_gpu_ids + trainer_gpu_ids))}")
 
     start_command = sys.argv
