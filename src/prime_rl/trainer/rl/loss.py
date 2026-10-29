@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -153,13 +154,12 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 def _mismatch_kl_from_log_ratio(log_importance_ratio: Tensor) -> Tensor:
     # Keep headroom for FP32 reductions across tokens and ranks.
-    metric_limit = log_importance_ratio.new_tensor(1e30)
-    mismatch_kl = torch.expm1(log_importance_ratio.clamp(max=metric_limit.log())) - log_importance_ratio
-    return mismatch_kl.clamp(max=metric_limit)
+    mismatch_kl = torch.expm1(log_importance_ratio.clamp(max=math.log(1e30))) - log_importance_ratio
+    return mismatch_kl.clamp(max=1e30)
 
 
 def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> Tensor:
-    capped_log_ratio = log_importance_ratio.detach().clamp(max=log_importance_ratio.new_tensor(max_ratio).log())
+    capped_log_ratio = log_importance_ratio.detach().clamp(max=math.log(max_ratio))
     return torch.exp(capped_log_ratio + (log_importance_ratio - log_importance_ratio.detach()))
 
 
@@ -175,11 +175,11 @@ def _importance_ratio_metrics(log_ratio: Tensor, keep_mask: Tensor) -> dict[str,
     for population, values in (("all", log_ratio.detach()), ("accepted", log_ratio.detach()[keep_mask])):
         # TensorStats promotes to FP64 when accumulating moments.
         values = values.float()
-        limit = values.new_tensor(1e30).log()
+        limit = math.log(1e30)
         metrics[f"importance_ratio/{population}"] = values.clamp(max=limit).exp()
         metrics[f"log_importance_ratio/{population}"] = values
         for threshold in (5, 10, 100, 10000):
-            metrics[f"importance_ratio/{population}/above_{threshold}"] = values > values.new_tensor(threshold).log()
+            metrics[f"importance_ratio/{population}/above_{threshold}"] = values > math.log(threshold)
         metrics[f"importance_ratio/{population}/saturated"] = values > limit
     return metrics
 
@@ -253,8 +253,8 @@ class IcePopLoss:
         advantages = inputs.advantages[inputs.loss_mask]
         weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
 
-        log_ratio_low = log_importance_ratio.new_tensor(loss_config.ratio_low).log()
-        log_ratio_high = log_importance_ratio.new_tensor(loss_config.ratio_high).log()
+        log_ratio_low = math.log(loss_config.ratio_low)
+        log_ratio_high = math.log(loss_config.ratio_high)
         detached_log_ratio = log_importance_ratio.detach()
         is_masked = (detached_log_ratio < log_ratio_low) | (detached_log_ratio > log_ratio_high)
         keep_mask = ~is_masked

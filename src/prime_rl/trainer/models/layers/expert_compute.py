@@ -55,7 +55,7 @@ def broadcast_expert_bias(
     target_rows: int,
 ) -> torch.Tensor:
     repeats = num_tokens_per_expert.to(torch.int64)
-    padding_rows = repeats.new_tensor(target_rows) - repeats.sum()
+    padding_rows = target_rows - repeats.sum()
     return torch.repeat_interleave(
         torch.cat((bias, bias.new_zeros((1, bias.shape[1])))),
         torch.cat((repeats, padding_rows.unsqueeze(0))),
