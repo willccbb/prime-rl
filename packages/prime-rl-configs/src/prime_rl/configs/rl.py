@@ -298,20 +298,6 @@ class RLConfig(BaseConfig):
                 )
         return self
 
-    @model_validator(mode="after")
-    def validate_enough_devices_for_nccl(self):
-        if self.deployment.type == "single_node":
-            if self.trainer.weight_broadcast.type == "nccl":
-                if self.deployment.colocate:
-                    raise ValueError(
-                        "Colocated inference needs filesystem weight broadcast: NCCL cannot pair two ranks on one GPU."
-                    )
-                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
-                    raise ValueError(
-                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
-                    )
-        return self
-
     ### Auto-setup shared configs (before sub-config construction)
 
     @model_validator(mode="before")
@@ -461,6 +447,20 @@ class RLConfig(BaseConfig):
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+        return self
+
+    @model_validator(mode="after")
+    def validate_enough_devices_for_nccl(self):
+        if self.deployment.type == "single_node":
+            if self.weight_broadcast.type == "nccl":
+                if self.deployment.colocate:
+                    raise ValueError(
+                        "Colocated inference needs filesystem weight broadcast: NCCL cannot pair two ranks on one GPU."
+                    )
+                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
+                    raise ValueError(
+                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
+                    )
         return self
 
     @model_validator(mode="after")

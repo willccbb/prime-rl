@@ -775,6 +775,10 @@ def test_colocated_inference_shares_the_trainer_gpu():
             }
         )
 
+    # Left unset, the broadcast would default to NCCL; colocation must still refuse it.
+    with pytest.raises(ValidationError, match="filesystem weight broadcast"):
+        RLConfig.model_validate({"trainer": {}, "orchestrator": {}, "inference": {}, "deployment": deployment})
+
 
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
