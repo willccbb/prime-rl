@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func, flash_attn_4_varlen_op
+from prime_rl.trainer.models.layers.attn import _flash_attn_fwd, flash_attn_4_varlen_op
 
 pytestmark = [pytest.mark.gpu]
 
@@ -20,7 +20,7 @@ def _eager_causal_attention(query, key, value, cu_seqlens, scale):
 
 
 def test_flash_attn_4_varlen_op_matches_eager_reference():
-    if flash_attn_4_varlen_func is None:
+    if _flash_attn_fwd is None:
         pytest.skip("flash-attn-4 is not installed")
     torch.manual_seed(0)
     # Packed GQA sequences whose boundaries are not tile-aligned.

@@ -120,7 +120,8 @@ def test_gpt_oss_attention_matches_eager_reference():
     value = torch.randn(total, 2, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     max_seqlen = int((cu_seqlens[1:] - cu_seqlens[:-1]).max())
 
-    output = attention.compute_attention(query, key, value, cu_seqlens, max_seqlen)
+    compiled = torch.compile(attention.compute_attention, fullgraph=True)
+    output = compiled(query, key, value, cu_seqlens, max_seqlen)
     grad_output = torch.randn_like(output, dtype=torch.float32)
     inputs = (query, key, value, attention.sinks)
     grads = torch.autograd.grad((output.float() * grad_output).sum(), inputs)
@@ -132,6 +133,8 @@ def test_gpt_oss_attention_matches_eager_reference():
     for grad, reference_grad in zip(grads, reference_grads):
         relative_error = (grad.float() - reference_grad.float()).norm() / reference_grad.float().norm()
         assert relative_error < 1e-2
+
+
 @pytest.mark.gpu
 def test_gpt_oss_attention_compiles_without_graph_breaks():
     if torch.cuda.get_device_capability()[0] not in (9, 10, 11):
