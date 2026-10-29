@@ -946,9 +946,18 @@ def setup_model(
 
     # FSDP computes in bf16, so a frozen weight kept in optimization_dtype is only ever cast down,
     # once per forward and again per backward. Storing it in bf16 skips the casts and halves its memory.
-    for param in model.parameters():
-        if not param.requires_grad:
-            param.data = param.data.to(torch.bfloat16)
+    # Weights the checkpoint stores in fp32 keep it, since weight transfer sends them as they are. The
+    # parameter is replaced rather than its .data, which on a DTensor would leave the local shard fp32.
+    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", lambda name: False)
+    cast = {}
+    for module_name, module in model.named_modules():
+        for name, param in list(module.named_parameters(recurse=False)):
+            full_name = f"{module_name}.{name}" if module_name else name
+            if param.requires_grad or param.dtype == torch.bfloat16 or keep_in_fp32(full_name):
+                continue
+            if param not in cast:
+                cast[param] = nn.Parameter(param.detach().to(torch.bfloat16), requires_grad=False)
+            setattr(module, name, cast[param])
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
