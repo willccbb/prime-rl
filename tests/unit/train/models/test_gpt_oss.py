@@ -132,6 +132,79 @@ def test_gpt_oss_attention_matches_eager_reference():
     for grad, reference_grad in zip(grads, reference_grads):
         relative_error = (grad.float() - reference_grad.float()).norm() / reference_grad.float().norm()
         assert relative_error < 1e-2
+@pytest.mark.gpu
+def test_gpt_oss_attention_compiles_without_graph_breaks():
+    if torch.cuda.get_device_capability()[0] not in (9, 10, 11):
+        pytest.skip("GPT-OSS learned sinks require SM90 or SM100/SM110")
+    from flash_attn.cute import flash_attn_varlen_func
+
+    torch.manual_seed(0)
+    config = _config()
+    config.head_dim = 64
+    attention = GptOssAttention(config, layer_idx=0).cuda().to(torch.bfloat16)
+    assert attention.sliding_window is not None
+    inputs = [torch.randn(8, heads, 64, device="cuda", dtype=torch.bfloat16) for heads in (4, 2, 2)]
+    cu_seqlens = torch.tensor([0, 5, 8], device="cuda", dtype=torch.int32)
+
+    def grads(output):
+        output.float().square().sum().backward()
+        sink_grad = attention.sinks.grad
+        attention.sinks.grad = None
+        return output.detach(), [tensor.grad for tensor in leaves], sink_grad
+
+    leaves = [tensor.clone().requires_grad_() for tensor in inputs]
+    reference, _ = flash_attn_varlen_func(
+        *leaves,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=5,
+        max_seqlen_k=5,
+        softmax_scale=attention.scaling,
+        causal=True,
+        window_size=(attention.sliding_window - 1, 0),
+        learnable_sink=attention.sinks,
+    )
+    expected = grads(reference)
+
+    leaves = [tensor.clone().requires_grad_() for tensor in inputs]
+    compiled = torch.compile(attention.compute_attention, fullgraph=True)
+    actual = grads(compiled(*leaves, cu_seqlens, 5))
+
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.gpu
+def test_flash_attn_4_op_propagates_lse_gradient():
+    if torch.cuda.get_device_capability()[0] not in (9, 10, 11):
+        pytest.skip("learned sinks require SM90 or SM100/SM110")
+    from flash_attn.cute import flash_attn_varlen_func
+
+    from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_op
+
+    torch.manual_seed(0)
+    inputs = [torch.randn(8, heads, 64, device="cuda", dtype=torch.bfloat16) for heads in (4, 2, 2)]
+    sink = torch.randn(4, device="cuda", dtype=torch.bfloat16)
+    cu_seqlens = torch.tensor([0, 5, 8], device="cuda", dtype=torch.int32)
+
+    def grads(attn, **kwargs):
+        leaves = [tensor.clone().requires_grad_() for tensor in [*inputs, sink]]
+        out, lse = attn(
+            *leaves[:3],
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=5,
+            max_seqlen_k=5,
+            causal=True,
+            learnable_sink=leaves[3],
+            **kwargs,
+        )
+        (out.float().square().sum() + lse.square().sum()).backward()
+        return [tensor.grad for tensor in leaves]
+
+    expected = grads(flash_attn_varlen_func, return_lse=True)
+    actual = grads(torch.compile(flash_attn_4_varlen_op, fullgraph=True))
+
+    torch.testing.assert_close(actual, expected)
 
 
 @pytest.fixture(scope="module")
