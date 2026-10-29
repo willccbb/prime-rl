@@ -5,7 +5,8 @@ accumulates GQA dK/dV in fp32 at a per-sequence offset of ``offset_k + batch_idx
 while the postprocess that converts the accumulator reads at the tile-rounded
 ``seqlen.padded_offset_k``. Whenever a packed sequence starts at an offset that is not a multiple of
 the tile size, dK and dV come out wrong. ``epilogue`` below is FA4 98c1cee's own, changed only to use
-``seqlen.padded_offset_k``.
+``seqlen.padded_offset_k``. The patch refuses to install unless FA4's epilogue is still exactly 98c1cee's,
+compared by syntax tree so formatting and comments don't count.
 
 CuTe DSL compiles kernels from their Python source on first use, so the replacement takes effect when
 it is installed before the first backward call. FA4's optional persistent kernel cache
@@ -13,7 +14,10 @@ it is installed before the first backward call. FA4's optional persistent kernel
 changing this module.
 """
 
+import ast
+import hashlib
 import inspect
+import textwrap
 
 import cutlass
 import cutlass.cute as cute
@@ -21,7 +25,8 @@ from flash_attn.cute import utils
 from flash_attn.cute.flash_bwd import FlashAttentionBackwardSm80
 from flash_attn.cute.seqlen_info import SeqlenInfoQK
 
-_UNPATCHED_OFFSET = "padded_offset_k = seqlen.offset_k + batch_idx * self.n_block_size"
+# sha256 of ast.dump of FlashAttentionBackwardSm80.epilogue at FA4 98c1cee (flash_bwd.py:1071-1197).
+_UPSTREAM_EPILOGUE_SHA256 = "3578d7dcc2ef44417034f1e5a9429ed110cc82952cc18be15cd88843ee36b229"
 
 
 @cute.jit
@@ -160,10 +165,11 @@ def patch_flash_attn_4_sm80_backward() -> None:
     """Install the fixed ``epilogue`` on FA4's SM80-family backward kernel."""
     if FlashAttentionBackwardSm80.epilogue is _epilogue:
         return
-    if _UNPATCHED_OFFSET not in inspect.getsource(FlashAttentionBackwardSm80.epilogue):
+    upstream = ast.parse(textwrap.dedent(inspect.getsource(FlashAttentionBackwardSm80.epilogue))).body[0]
+    if hashlib.sha256(ast.dump(upstream).encode()).hexdigest() != _UPSTREAM_EPILOGUE_SHA256:
         raise RuntimeError(
-            "FlashAttention 4's SM80 backward epilogue no longer matches the version this patch replaces; "
-            "check whether the padded_offset_k fix is upstream and update or remove "
+            "FlashAttention 4's SM80 backward epilogue is no longer 98c1cee's, which this patch replaces; "
+            "check whether the padded_offset_k fix is upstream, then update or remove "
             "prime_rl/trainer/models/layers/flash_attn_4_patch.py"
         )
     FlashAttentionBackwardSm80.epilogue = _epilogue
