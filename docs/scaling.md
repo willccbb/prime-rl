@@ -44,6 +44,21 @@ uv run rl @ rl.toml \
 
 The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
 
+A model small enough to leave a GPU mostly idle can share one with its trainer. `colocate` puts inference on the trainer's first `num_infer_gpus` GPUs; give vLLM a slice of memory and reload weights from disk:
+
+```toml
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+colocate = true
+
+[weight_broadcast]
+type = "filesystem"
+
+[inference.vllm]
+gpu_memory_utilization = 0.3
+```
+
 For quick A/B ablations on the same node, run two RL instances side-by-side in separate shells, each pinned to half the GPUs and a separate inference port, and track both in one dashboard:
 
 ```bash
