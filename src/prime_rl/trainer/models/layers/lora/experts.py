@@ -2,7 +2,7 @@ import torch
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.expert_compute import broadcast_expert_bias
-from prime_rl.trainer.models.layers.lora.base import LoRAModule, lora_parameter
+from prime_rl.trainer.models.layers.lora.base import LoRAModule, lora_parameter, pad_rank
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
@@ -18,6 +18,21 @@ def _full(tensor: torch.Tensor) -> torch.Tensor:
 def _grouped_mm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
     """x [tokens, in] @ weight [experts, out, in] per expert group."""
     return torch._grouped_mm(x.bfloat16(), _to_local(weight).bfloat16().transpose(-2, -1), offs=offsets)
+
+
+def _dense(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """x [tokens, in] @ weight [out, in] for an adapter matrix shared by every expert."""
+    return x.bfloat16() @ _to_local(weight).bfloat16().T
+
+
+def _flat_a(a: torch.Tensor) -> torch.Tensor:
+    """(num_experts, rank, in) -> (num_experts*rank, in)"""
+    return a.reshape(-1, a.shape[-1]).clone()
+
+
+def _flat_b(b: torch.Tensor) -> torch.Tensor:
+    """(num_experts, out, rank) -> (out, rank*num_experts) with experts fast-varying"""
+    return b.permute(1, 2, 0).contiguous().reshape(b.shape[1], -1)
 
 
 def _check_grouped_mm_dims(*dims: int) -> None:
@@ -100,19 +115,11 @@ class LoRAGptOssGroupedExperts(LoRAModule):
             lora_A: (num_experts*rank, in)  -> (num_experts, rank, in)
             lora_B: (out, rank*num_experts) -> (out, rank, num_experts) -> (num_experts, out, rank)
         """
-
-        def flat_a(a: torch.Tensor) -> torch.Tensor:
-            return a.reshape(-1, a.shape[-1]).clone()
-
-        def flat_b(b: torch.Tensor) -> torch.Tensor:
-            # (num_experts, out, rank) -> (out, rank*num_experts) with experts fast-varying
-            return b.permute(1, 2, 0).contiguous().reshape(b.shape[1], -1)
-
         return {
-            "base_layer.lora_A.weight": flat_a(_full(self.gate_up_lora_A)),
-            "base_layer.lora_B.weight": flat_b(_full(self.gate_up_lora_B)),
-            "lora_A.weight": flat_a(_full(self.down_lora_A)),
-            "lora_B.weight": flat_b(_full(self.down_lora_B)),
+            "base_layer.lora_A.weight": _flat_a(_full(self.gate_up_lora_A)),
+            "base_layer.lora_B.weight": _flat_b(_full(self.gate_up_lora_B)),
+            "lora_A.weight": _flat_a(_full(self.down_lora_A)),
+            "lora_B.weight": _flat_b(_full(self.down_lora_B)),
         }
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
@@ -139,3 +146,63 @@ class LoRAGptOssGroupedExperts(LoRAModule):
         out = base.project("down_proj", h, offsets)
         out = out + bias(base.down_proj_bias, out)
         return (out + self.scaling * lora(self.lora_dropout(h), self.down_lora_A, self.down_lora_B)).type_as(x)
+
+
+class LoRATinkerGptOssExperts(LoRAModule):
+    """GPT-OSS GroupedExperts + LoRA in Tinker's layout.
+
+    Gate and up each have one A shared across experts and a B per expert; down has an A per expert and
+    one B shared across experts. Exports the same vLLM 3D MoE format as ``LoRAGptOssGroupedExperts`` at
+    twice the rank: the fused gate_up adapter stacks the gate and up A matrices, gate rows of B in the
+    first ``rank`` columns and up rows in the rest, and down is zero-padded to match.
+    """
+
+    def __init__(self, base_layer: GroupedExperts, rank: int, alpha: float = 32.0, dropout: float = 0.0):
+        super().__init__(base_layer, rank, alpha, dropout, export_rank=2 * rank)
+        n, hidden_size, intermediate_size = base_layer.num_experts, base_layer.dim, base_layer.hidden_dim
+        self.num_experts = n
+        _check_grouped_mm_dims(rank, hidden_size, intermediate_size)
+        like = base_layer.up_proj_bias
+        self.gate_lora_A = lora_parameter(rank, hidden_size, like=like)
+        self.gate_lora_B = lora_parameter(n, intermediate_size, rank, like=like)
+        self.up_lora_A = lora_parameter(rank, hidden_size, like=like)
+        self.up_lora_B = lora_parameter(n, intermediate_size, rank, like=like)
+        self.down_lora_A = lora_parameter(n, rank, intermediate_size, like=like)
+        self.down_lora_B = lora_parameter(hidden_size, rank, like=like)
+        self.reset_parameters()
+
+    def adapter_state_dict(self) -> dict[str, torch.Tensor]:
+        n, r = self.num_experts, self.rank
+        gate_B, up_B = _full(self.gate_lora_B), _full(self.up_lora_B)
+        gate_up_A = torch.cat([_full(self.gate_lora_A), _full(self.up_lora_A)]).expand(n, -1, -1)
+        gate_up_B = gate_B.new_zeros(n, 2 * gate_B.shape[1], 2 * r)
+        gate_up_B[:, 0::2, :r] = gate_B
+        gate_up_B[:, 1::2, r:] = up_B
+        down_A, down_B = pad_rank(_full(self.down_lora_A), _full(self.down_lora_B).expand(n, -1, -1), 2 * r)
+        return {
+            "base_layer.lora_A.weight": _flat_a(gate_up_A),
+            "base_layer.lora_B.weight": _flat_b(gate_up_B),
+            "lora_A.weight": _flat_a(down_A),
+            "lora_B.weight": _flat_b(down_B),
+        }
+
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        base = self.base_layer
+        offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+
+        def bias(tensor: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+            return broadcast_expert_bias(_to_local(tensor), num_tokens_per_expert, out.shape[0]).bfloat16()
+
+        lora_x = self.lora_dropout(x)
+        gate = base.project("gate_proj", x, offsets)
+        gate = gate + bias(base.gate_proj_bias, gate)
+        gate = gate + self.scaling * _grouped_mm(_dense(lora_x, self.gate_lora_A), self.gate_lora_B, offsets)
+        up = base.project("up_proj", x, offsets)
+        up = up + bias(base.up_proj_bias, up)
+        up = up + self.scaling * _grouped_mm(_dense(lora_x, self.up_lora_A), self.up_lora_B, offsets)
+
+        h = base.activation.apply(gate, up)
+        out = base.project("down_proj", h, offsets)
+        out = out + bias(base.down_proj_bias, out)
+        down = _dense(_grouped_mm(self.lora_dropout(h), self.down_lora_A, offsets), self.down_lora_B)
+        return (out + self.scaling * down).type_as(x)

@@ -1,15 +1,21 @@
 import re
+from pathlib import Path
 from typing import Callable, List
 
 import torch
 import torch.nn as nn
+from safetensors.torch import load_file
+from torch.distributed.tensor import DTensor, distribute_tensor
 
 from prime_rl.configs.trainer import LoRAConfig
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear
 from prime_rl.trainer.models.layers.lora import (
     LoRAGptOssGroupedExperts,
     LoRAGroupedExperts,
     LoRALinear,
     LoRAModule,
+    LoRAOutputLinear,
+    LoRATinkerGptOssExperts,
 )
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.utils.logger import get_logger
@@ -47,6 +53,27 @@ class LoRAState:
         """Reset the adapter to fresh initialization across all registered modules."""
         for _, module in self._modules:
             module.reset_parameters()
+
+    @torch.no_grad()
+    def load_adapter_parameters(self, path: Path) -> None:
+        """Set every adapter parameter from a safetensors file keyed by ``{module}.{parameter}``."""
+        tensors = load_file(path)
+        params = {
+            f"{prefix}.{name}": param
+            for prefix, module in self._modules
+            for name, param in module.named_parameters(recurse=False)
+        }
+        if tensors.keys() != params.keys():
+            missing, unexpected = sorted(params.keys() - tensors.keys()), sorted(tensors.keys() - params.keys())
+            raise ValueError(f"LoRA init {path} does not match the adapter: missing {missing}, unexpected {unexpected}")
+        for name, param in params.items():
+            tensor = tensors[name]
+            if tensor.shape != param.shape:
+                raise ValueError(f"LoRA init {name} has shape {tuple(tensor.shape)}, the adapter {tuple(param.shape)}")
+            tensor = tensor.to(device=param.device, dtype=param.dtype)
+            if isinstance(param, DTensor):
+                tensor = distribute_tensor(tensor, param.device_mesh, param.placements)
+            param.copy_(tensor)
 
 
 _LORA_STATE: LoRAState | None = None
@@ -147,6 +174,8 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     uses_gpt_oss_moe_adapter = (
         isinstance(model, PreTrainedModelPrimeRL) and getattr(model.config, "model_type", None) == "gpt_oss"
     )
+    if config.layout == "tinker" and not uses_gpt_oss_moe_adapter:
+        raise ValueError("LoRA layout 'tinker' is only implemented for gpt-oss.")
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -167,13 +196,17 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 
     for module_name in target_modules:
         base_module = model.get_submodule(module_name)
-        if isinstance(base_module, nn.Linear):
-            wrapper = LoRALinear
+        kwargs = dict(rank=config.rank, alpha=config.alpha, dropout=config.dropout)
+        if isinstance(base_module, (FusedOutputLinear, VanillaOutputLinear)):
+            lora_module = LoRAOutputLinear(base_module, export_rank=config.export_rank, **kwargs)
+        elif isinstance(base_module, nn.Linear):
+            lora_module = LoRALinear(base_module, export_rank=config.export_rank, **kwargs)
+        elif config.layout == "tinker":
+            lora_module = LoRATinkerGptOssExperts(base_module, **kwargs)
         elif uses_gpt_oss_moe_adapter:
-            wrapper = LoRAGptOssGroupedExperts
+            lora_module = LoRAGptOssGroupedExperts(base_module, **kwargs)
         else:
-            wrapper = LoRAGroupedExperts
-        lora_module = wrapper(base_module, rank=config.rank, alpha=config.alpha, dropout=config.dropout)
+            lora_module = LoRAGroupedExperts(base_module, **kwargs)
         lora_state.register_module(module_name, lora_module)
         model.set_submodule(module_name, lora_module)
 

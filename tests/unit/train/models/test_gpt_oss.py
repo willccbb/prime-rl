@@ -82,6 +82,76 @@ def test_gpt_oss_mxfp4_experts_count_as_active_params():
     assert counts[0] == counts[1]
 
 
+def test_tinker_layout_expert_lora_matches_its_vllm_export():
+    from prime_rl.trainer.models.layers.lora import LoRAGptOssGroupedExperts, LoRATinkerGptOssExperts
+    from prime_rl.trainer.models.layers.moe import GroupedExperts
+
+    torch.manual_seed(0)
+    n, dim, hidden, rank = 4, 64, 32, 8
+    experts = GroupedExperts(dim, hidden, n, activation="clamped_swiglu", bias=True)
+    for param in experts.parameters():
+        param.data.normal_(0, 0.05)
+    tinker = LoRATinkerGptOssExperts(experts, rank=rank, alpha=16.0)
+    for param in tinker.parameters():
+        if param.requires_grad:
+            param.data.normal_(0, 0.1)
+
+    # The export, loaded into the per-expert module at twice the rank with the same alpha / rank.
+    export = tinker.adapter_state_dict()
+    per_expert = LoRAGptOssGroupedExperts(experts, rank=2 * rank, alpha=32.0)
+
+    def unflat_b(b):
+        return b.reshape(b.shape[0], 2 * rank, n).permute(2, 0, 1)
+
+    per_expert.gate_up_lora_A.data.copy_(export["base_layer.lora_A.weight"].reshape(n, 2 * rank, dim))
+    per_expert.gate_up_lora_B.data.copy_(unflat_b(export["base_layer.lora_B.weight"]))
+    per_expert.down_lora_A.data.copy_(export["lora_A.weight"].reshape(n, 2 * rank, hidden))
+    per_expert.down_lora_B.data.copy_(unflat_b(export["lora_B.weight"]))
+
+    counts = torch.tensor([16, 0, 24, 8])
+    x = torch.randn(int(counts.sum()), dim)
+    out = tinker(x, counts)
+    torch.testing.assert_close(out, per_expert(x, counts), atol=2e-2, rtol=2e-2)
+    lora_out = out - experts(x, counts).float()
+    assert lora_out.abs().mean() > 0.05  # the adapter moved the output
+    grads = torch.autograd.grad(out.square().sum(), [p for p in tinker.parameters() if p.requires_grad])
+    assert all(grad.abs().sum() > 0 for grad in grads)
+
+
+def test_tinker_layout_adapter_loads_init_and_exports_twice_the_rank(tmp_path):
+    from safetensors.torch import save_file
+
+    from prime_rl.configs.trainer import LoRAConfig
+    from prime_rl.trainer.lora import apply_lora_to_model, get_lora_state
+    from prime_rl.trainer.models.layers.lora import LoRAOutputLinear, LoRATinkerGptOssExperts
+
+    config = _config()
+    config.hidden_size = config.intermediate_size = 64
+    model = PrimeRLGptOssForCausalLM(config)
+    lora_config = LoRAConfig(rank=8, layout="tinker", target_modules=["q_proj", "experts", "lm_head"])
+    apply_lora_to_model(model, lora_config)
+    assert isinstance(model.lm_head, LoRAOutputLinear)
+    assert isinstance(model.model.layers[0].mlp.experts, LoRATinkerGptOssExperts)
+    assert lora_config.export_rank == 16
+
+    params = {name: param for name, param in model.named_parameters() if param.requires_grad}
+    init = {name: torch.randn(param.shape) for name, param in params.items()}
+    save_file(init, tmp_path / "init.safetensors")
+    get_lora_state().load_adapter_parameters(tmp_path / "init.safetensors")
+    for name, param in params.items():
+        assert torch.equal(param, init[name])
+
+    export = get_lora_state().adapter_state_dict()
+    assert export["model.layers.0.self_attn.q_proj.lora_A.weight"].shape == (16, 64)
+    assert export["lm_head.lora_B.weight"].shape == (config.vocab_size, 16)
+    assert export["model.layers.0.mlp.experts.base_layer.lora_A.weight"].shape == (4 * 16, 64)
+
+    del init["lm_head.lora_A"]
+    save_file(init, tmp_path / "partial.safetensors")
+    with pytest.raises(ValueError, match="lm_head.lora_A"):
+        get_lora_state().load_adapter_parameters(tmp_path / "partial.safetensors")
+
+
 @pytest.fixture(scope="module")
 def cp_process_group():
     if int(os.environ.get("WORLD_SIZE", 1)) != 2:

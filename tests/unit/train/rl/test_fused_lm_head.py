@@ -385,3 +385,38 @@ def test_inject_prime_lm_head_fused():
     assert out.get("logits") is None, "Fused path should not return logits"
     assert out["logprobs"].shape == (batch_size, seq_len), "Logprobs shape mismatch"
     assert out["entropy"].shape == (batch_size, seq_len), "Entropy shape mismatch"
+
+
+@pytest.mark.parametrize("fused", [False, True])
+def test_lm_head_lora_matches_explicit_adapter(fused):
+    from prime_rl.trainer.models.layers.lora import LoRAOutputLinear
+
+    torch.manual_seed(0)
+    head = FusedOutputLinear(16, 37, chunk_size=5) if fused else VanillaOutputLinear(16, 37)
+    lora = LoRAOutputLinear(head, rank=4, alpha=8.0, export_rank=8)
+    torch.nn.init.normal_(lora.lora_B)
+    hidden = torch.randn(2, 6, 16, requires_grad=True)
+    labels = torch.randint(0, 37, (2, 6))
+    temperature = torch.full((2, 6), 0.7)
+
+    logits = hidden @ head.weight.T + 2.0 * hidden @ lora.lora_A.T @ lora.lora_B.T
+    out = lora(hidden, labels, temperature=temperature)
+    if fused:
+        expected = torch.log_softmax(logits / 0.7, dim=-1).gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+        actual = out["logprobs"]
+    else:
+        expected, actual = logits, out["logits"]
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+    params = (hidden, lora.lora_A, lora.lora_B)
+    torch.testing.assert_close(
+        torch.autograd.grad(actual.square().sum(), params),
+        torch.autograd.grad(expected.square().sum(), params),
+        atol=1e-4,
+        rtol=1e-4,
+    )
+    assert head.weight.grad is None and not head.weight.requires_grad
+
+    adapter = lora.adapter_state_dict()
+    assert adapter["lora_A.weight"].shape == (8, 16) and adapter["lora_B.weight"].shape == (37, 8)
+    torch.testing.assert_close(adapter["lora_B.weight"] @ adapter["lora_A.weight"], lora.lora_B @ lora.lora_A)

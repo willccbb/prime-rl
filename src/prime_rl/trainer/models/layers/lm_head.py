@@ -60,8 +60,11 @@ class FusedOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
         topk_ids: Tensor | None = None,
+        weight: Tensor | None = None,
     ) -> PrimeLmOutput:
+        """``weight`` replaces ``self.weight`` (an adapter widens both it and the hidden states)."""
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
+        weight = self.weight if weight is None else weight
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
@@ -69,7 +72,7 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if temperature is None:
             assert sampling_mask is None and topk_ids is None, "Sampling evidence requires per-token temperatures"
-            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size, self.softcap)
+            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
@@ -79,7 +82,7 @@ class FusedOutputLinear(torch.nn.Linear):
         if topk_ids is not None:
             topk_ids = topk_ids.reshape(b * s, topk_ids.shape[-1]).long().contiguous()
         logprobs, entropy, topk_logprobs = _SequenceChunkedLogProbEntropyFn.apply(
-            hidden_states, self.weight, labels, inv_t, self.chunk_size, sampling_mask, topk_ids, self.softcap
+            hidden_states, weight, labels, inv_t, self.chunk_size, sampling_mask, topk_ids, self.softcap
         )
 
         logprobs = logprobs.reshape(b, s)
@@ -103,8 +106,10 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
         topk_ids: Tensor | None = None,
+        weight: Tensor | None = None,
     ) -> PrimeLmOutput:
-        logits = super().forward(hidden_states)
+        """``weight`` replaces ``self.weight`` (an adapter widens both it and the hidden states)."""
+        logits = F.linear(hidden_states, self.weight if weight is None else weight)
         if self.softcap is not None:
             logits = self.softcap * torch.tanh(logits / self.softcap)
         if labels is not None and temperature is None:

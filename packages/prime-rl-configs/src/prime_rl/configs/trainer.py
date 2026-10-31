@@ -88,6 +88,17 @@ class LoRAConfig(BaseConfig):
     ]
     """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches the ReLU² grouped experts; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
 
+    layout: Literal["per_expert", "tinker"] = "per_expert"
+    """How expert adapters share matrices. ``per_expert`` gives every expert its own A and B. ``tinker`` is Tinker's gpt-oss layout: gate and up each have one A shared across experts and a B per expert, and down has an A per expert and one B shared across experts. A ``tinker`` adapter exports to vLLM at twice ``rank``, since the fused gate_up adapter stacks the gate and up A matrices; other modules are zero-padded to it. gpt-oss only, and not with expert parallelism, which would shard the shared matrices."""
+
+    init: Path | None = None
+    """Safetensors file of the adapter's starting values, keyed by the trainer's parameter names (e.g. ``model.layers.0.self_attn.q_proj.lora_A``); every adapter parameter must be in it. Unset, A is Kaiming-uniform and B zero. Resuming from a checkpoint overrides it."""
+
+    @property
+    def export_rank(self) -> int:
+        """Rank of the adapter vLLM loads."""
+        return 2 * self.rank if self.layout == "tinker" else self.rank
+
 
 class DebugModelConfig(BaseConfig):
     num_layers: int | None = None

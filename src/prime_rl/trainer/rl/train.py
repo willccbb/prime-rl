@@ -216,6 +216,8 @@ def train(config: TrainerConfig):
     # carries no adapter weights); a checkpoint resume below overwrites it.
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()
+        if config.model.lora.init is not None:
+            get_lora_state().load_adapter_parameters(config.model.lora.init)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
