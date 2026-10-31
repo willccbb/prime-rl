@@ -206,6 +206,28 @@ def test_grpo_length_weighted_baseline():
     assert advs == pytest.approx([0.75 - 65 / 120, -1 / 12 - 65 / 120])
 
 
+def test_grpo_per_agent_baseline_compares_each_agent_with_its_own_peers():
+    # One episode with agents on different reward scales, as fact-calibration's answers and forecasts; an agent
+    # with a single trace has no peers and gets no advantage.
+    episode = _make_episode(0.0)
+    rewards = [("answer", 1.0), ("answer", 0.0), ("answer", 1.0), ("forecast", -0.1), ("forecast", -0.3), ("judge", 0.5)]
+    template = episode.traces[0]
+    episode.traces = [
+        template.model_copy(
+            update={
+                "agent": vf.AgentInfo(config=vf.AgentConfig(), name=name),
+                "rewards": {"reward": vf.Reward(score=r)},
+            },
+            deep=True,
+        )
+        for name, r in rewards
+    ]
+    algo = GRPOAlgorithm(GRPOAlgoConfig(per_agent_baseline=True), clients=None)
+    asyncio.run(algo.score_group([episode]))
+    advantages = [float(trace.nodes[1].advantages[0]) for trace in episode.traces]
+    assert advantages == pytest.approx([1 / 3, -2 / 3, 1 / 3, 0.1, -0.1, 0.0])
+
+
 def test_max_rl_mean_normalized():
     # mean 0.25: the success gets (1 - 0.25)/0.25 = 3, failures (0 - 0.25)/0.25 = -1
     assert _max_rl(_make_group(rewards=[1.0, 0.0, 0.0, 0.0])) == pytest.approx([3.0, -1.0, -1.0, -1.0])

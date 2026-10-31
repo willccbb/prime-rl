@@ -46,12 +46,14 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
 class GRPOAlgorithm(Algorithm):
     """Group Relative Policy Optimization: sample a group of rollouts from the
     policy per example; credit = reward minus the group mean (optionally
-    length-shaped); action tokens feed the ``rl`` loss."""
+    length-shaped, length-weighted, or taken per agent); action tokens feed the
+    ``rl`` loss."""
 
     def __init__(self, config: GRPOAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
         self.length_weighted_baseline = config.length_weighted_baseline
+        self.per_agent_baseline = config.per_agent_baseline
         self.loss_aggregation = config.loss_aggregation
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
@@ -79,13 +81,18 @@ class GRPOAlgorithm(Algorithm):
             )
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
-        baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
-            lengths = torch.tensor(
+            weights = torch.tensor(
                 [sum(int(np.count_nonzero(node.mask)) for node in trainable_nodes(trace)) for trace in traces],
                 dtype=rewards.dtype,
             )
-            baseline = (lengths * shaped_rewards).sum() / lengths.sum()
+        else:
+            weights = torch.ones_like(shaped_rewards)
+        peers = [trace.agent.name if self.per_agent_baseline else None for trace in traces]
+        baseline = torch.empty_like(shaped_rewards)
+        for peer in set(peers):
+            members = torch.tensor([p == peer for p in peers])
+            baseline[members] = (weights[members] * shaped_rewards[members]).sum() / weights[members].sum()
         advantages = shaped_rewards - baseline
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
             assign_advantages(trace, advantage)
