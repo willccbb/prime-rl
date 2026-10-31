@@ -93,6 +93,14 @@ Branch: `router-disable-circuit-breaker`
 - **Tests:** none; the local command and the SLURM template were checked with the option on and off.
 - **On main:** no.
 
+### Fully synchronous groups
+Branch: `synchronous-groups`
+
+- **Broke:** nothing; a missing mode. The async pipeline always samples some groups across an update, and `max_staleness = 0` only masks the stale tokens, so a batch leans toward the episodes that finish fast. Comparing against Tinker runs from pinky's `synchronous_groups` needs batches sampled entirely on the policy they train.
+- **Fix:** `[orchestrator] synchronous_groups = N` opens exactly N train groups on the current policy, waits for all of them (failed and cancelled episodes count), and ships every trainable trace as one batch, with the dispatch gate at lag 0 and overload cuts lowering the cap without cancelling. A batch with nothing to train is resampled on the same policy. An env request cancelled from inside now fails its group member instead of vanishing, which in this mode would stall the step.
+- **Tests:** `test_synchronous_groups_ship_every_queued_trace_once_all_groups_finalize` in `tests/unit/orchestrator/test_train_sink.py`, and `tests/unit/orchestrator/test_dispatcher.py`.
+- **On main:** no.
+
 ## Carried elsewhere
 
 - **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release), `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it), `context-overflow-truncates` (a harness dying on a context overflow stops the rollout as `prompt_too_long` and it is scored) and `train-client-arguments-text` (the train client returns tool-call arguments as the model wrote them), among others. That last one sources renderers from a git revision, which the `renderers` entry in `override-dependencies` replaces with `deps/renderers`.
