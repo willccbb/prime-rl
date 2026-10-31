@@ -114,8 +114,19 @@ def test_tinker_layout_expert_lora_matches_its_vllm_export():
     torch.testing.assert_close(out, per_expert(x, counts), atol=2e-2, rtol=2e-2)
     lora_out = out - experts(x, counts).float()
     assert lora_out.abs().mean() > 0.05  # the adapter moved the output
-    grads = torch.autograd.grad(out.square().sum(), [p for p in tinker.parameters() if p.requires_grad])
+    params = [p for p in tinker.parameters() if p.requires_grad]
+    grads = torch.autograd.grad(out.square().sum(), params)
     assert all(grad.abs().sum() > 0 for grad in grads)
+
+    # The token dispatcher pads the experts' input past the last offset, rows grouped_mm leaves uninitialized.
+    # They must not reach the shared factors' gradients.
+    for seed in range(20):
+        torch.manual_seed(seed)
+        padded = torch.cat([x, torch.zeros(16, dim)])
+        padded_out = tinker(padded, counts)[: len(x)]
+        padded_grads = torch.autograd.grad(padded_out.square().sum(), params)
+        for grad, padded_grad in zip(grads, padded_grads):
+            torch.testing.assert_close(padded_grad, grad)
 
 
 def test_tinker_layout_adapter_loads_init_and_exports_twice_the_rank(tmp_path):
@@ -128,6 +139,8 @@ def test_tinker_layout_adapter_loads_init_and_exports_twice_the_rank(tmp_path):
     config = _config()
     config.hidden_size = config.intermediate_size = 64
     model = PrimeRLGptOssForCausalLM(config)
+    with pytest.raises(ValueError, match="lm_head"):
+        LoRAConfig(rank=8, layout="tinker", target_modules=["q_proj", "experts"])
     lora_config = LoRAConfig(rank=8, layout="tinker", target_modules=["q_proj", "experts", "lm_head"])
     apply_lora_to_model(model, lora_config)
     assert isinstance(model.lm_head, LoRAOutputLinear)

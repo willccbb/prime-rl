@@ -193,16 +193,23 @@ class LoRATinkerGptOssExperts(LoRAModule):
         def bias(tensor: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
             return broadcast_expert_bias(_to_local(tensor), num_tokens_per_expert, out.shape[0]).bfloat16()
 
+        # Rows past offsets[-1] are padding that grouped_mm leaves uninitialized, in its output and in its input
+        # gradient. The shared factors' dense matmuls run over every row, so those rows are zeroed on the way into
+        # and out of each grouped_mm, or their garbage would reach the shared factors' gradients.
+        padding = (torch.arange(x.shape[0], device=x.device) >= offsets[-1]).unsqueeze(-1)
         lora_x = self.lora_dropout(x)
+        gate_a = _dense(lora_x, self.gate_lora_A).masked_fill(padding, 0)
+        up_a = _dense(lora_x, self.up_lora_A).masked_fill(padding, 0)
         gate = base.project("gate_proj", x, offsets)
         gate = gate + bias(base.gate_proj_bias, gate)
-        gate = gate + self.scaling * _grouped_mm(_dense(lora_x, self.gate_lora_A), self.gate_lora_B, offsets)
+        gate = gate + self.scaling * _grouped_mm(gate_a, self.gate_lora_B, offsets)
         up = base.project("up_proj", x, offsets)
         up = up + bias(base.up_proj_bias, up)
-        up = up + self.scaling * _grouped_mm(_dense(lora_x, self.up_lora_A), self.up_lora_B, offsets)
+        up = up + self.scaling * _grouped_mm(up_a, self.up_lora_B, offsets)
 
         h = base.activation.apply(gate, up)
         out = base.project("down_proj", h, offsets)
         out = out + bias(base.down_proj_bias, out)
-        down = _dense(_grouped_mm(self.lora_dropout(h), self.down_lora_A, offsets), self.down_lora_B)
+        down_a = _grouped_mm(self.lora_dropout(h), self.down_lora_A, offsets).masked_fill(padding, 0)
+        down = _dense(down_a, self.down_lora_B)
         return (out + self.scaling * down).type_as(x)
