@@ -555,6 +555,9 @@ class OrchestratorConfig(BaseConfig):
     max_staleness: int = Field(8, ge=0)
     """Maximum token staleness: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of noisier, more off-policy updates."""
 
+    synchronous_groups: int | None = Field(None, ge=1)
+    """Train fully on-policy: each batch opens exactly this many train groups on the current policy, waits for all of them to finish (failed and cancelled episodes count as finished), and ships every trainable trace they produced as one batch. No group is sampled across an update, and none is left out for finishing late, which would bias each batch toward fast episodes. A batch with nothing to train is resampled on the same policy. ``batch_size`` is ignored. The concurrency controller can still lower the in-flight cap, but it cancels nothing, since a cancelled group would leave the batch short. Each step waits on its slowest episode, so a rollout that never returns stalls training. None keeps the asynchronous pipeline."""
+
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
