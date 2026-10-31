@@ -223,6 +223,9 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     length_weighted_baseline: bool = False
     """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""
 
+    per_agent_baseline: bool = False
+    """Baseline each trace against the group's traces of the same agent (``trace.agent.name``) instead of the whole group, so an episode whose agents earn rewards on different scales (an answerer and a forecaster, say) trains each against its own peers. The length penalty still reads the whole group."""
+
     loss_aggregation: Literal["token", "prompt"] = "token"
     """How the rl loss weights tokens across prompt groups. ``token``: every loss token in the batch weighs the same, so groups with more total tokens dominate the gradient. ``prompt``: prompt-mean (MiMo-V2.6 Eq. 1) — each trainable token of group ``q`` gets rl weight ``1 / T_q`` (``T_q`` = the group's trainable tokens), and the trainer divides the rl loss by the summed weights, i.e. the number of groups. All rl envs of a run must use the same value."""
 
