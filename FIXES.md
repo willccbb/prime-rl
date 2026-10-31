@@ -101,6 +101,23 @@ Branch: `synchronous-groups`
 - **Tests:** `test_synchronous_groups_ship_every_queued_trace_once_all_groups_finalize` in `tests/unit/orchestrator/test_train_sink.py`, and `tests/unit/orchestrator/test_dispatcher.py`.
 - **On main:** no.
 
+### Tinker's gpt-oss LoRA layout
+Branch: `tinker-lora`
+
+- **Broke:** nothing; a missing layout. Comparing a prime-rl run with a Tinker run at the same state needs Tinker's adapter: one rank-r adapter per attention projection and per unembedding, and for the experts a shared A for gate and up with per-expert B, per-expert A with a shared B for down. vLLM loads it as a per-expert adapter at twice the rank.
+- **Fix:** `[trainer.model.lora] layout = "tinker"` builds that adapter and requires `lm_head` in `target_modules`; `export_rank` (2r for this layout) sizes vLLM's `max_lora_rank` and the exported adapter, zero-padded with alpha scaled to keep alpha / rank. `init` loads an adapter in the trainer's FQNs before training, and the trainer's startup broadcast gives vLLM the same weights. The unembedding adapter folds into the fused head as extra columns. Rows the token dispatcher pads past the last offset are zeroed around each `grouped_mm`, which leaves them uninitialized. Not with expert parallelism.
+- **Evidence:** the expert adapter's output equals its per-expert export's to fp32 rounding, and with padding rows its gradients match the unpadded ones (they were NaN in most seeds before the zeroing).
+- **Tests:** `test_tinker_layout_expert_lora_matches_its_vllm_export` in `tests/unit/train/models/test_gpt_oss.py`, and `tests/unit/train/rl/test_fused_lm_head.py`. The fused head accumulates `lm_head.lora_B`'s gradient in bf16 across token chunks; `fused_lm_head_token_chunk_size = "disabled"` avoids it.
+- **On main:** no.
+
+### Colocated inference
+Branch: `colocate` (cherry-picked)
+
+- **Broke:** nothing; a missing mode. A one-GPU run (Modal B200) needs vLLM and the trainer on the same device.
+- **Fix:** `[deployment] colocate = true` puts inference on the trainer's GPUs. It needs filesystem weight broadcast, and vLLM's `gpu_memory_utilization` has to leave room for the trainer, since nothing arbitrates between the two.
+- **Tests:** the colocate cases in `tests/unit/test_configs.py`.
+- **On main:** no.
+
 ## Carried elsewhere
 
 - **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release), `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it), `context-overflow-truncates` (a harness dying on a context overflow stops the rollout as `prompt_too_long` and it is scored) and `train-client-arguments-text` (the train client returns tool-call arguments as the model wrote them), among others. That last one sources renderers from a git revision, which the `renderers` entry in `override-dependencies` replaces with `deps/renderers`.
