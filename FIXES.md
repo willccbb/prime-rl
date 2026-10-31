@@ -118,6 +118,14 @@ Branch: `colocate` (cherry-picked)
 - **Tests:** the colocate cases in `tests/unit/test_configs.py`.
 - **On main:** no.
 
+### Per-agent GRPO baseline
+Branch: `per-agent-baseline` (cherry-picked)
+
+- **Broke:** nothing; a missing option. Fact-calibration's episodes hold answers scored on accuracy and forecasts scored by Brier, and plain GRPO baselines them against one mean. `hierarchical_grpo` baselines per role but only accepts proposer-solver envs.
+- **Fix:** `[orchestrator.train.algo] per_agent_baseline = true` on the `grpo` family takes the baseline over the group's traces of the same agent (`trace.agent.name`). It composes with `length_weighted_baseline`; the length penalty still reads the whole group.
+- **Tests:** `test_grpo_per_agent_baseline_compares_each_agent_with_its_own_peers` in `tests/unit/orchestrator/test_advantage.py`.
+- **On main:** no.
+
 ## Carried elsewhere
 
 - **verifiers `swarm-rl/dev`:** `prime-agent-local-release` (`env.agent.harness.release` installs a locally built Prime Agent release), `prime-agent-save-session` (Prime Agent writes its session log again; prime-agent-basics scores from it), `context-overflow-truncates` (a harness dying on a context overflow stops the rollout as `prompt_too_long` and it is scored) and `train-client-arguments-text` (the train client returns tool-call arguments as the model wrote them), among others. That last one sources renderers from a git revision, which the `renderers` entry in `override-dependencies` replaces with `deps/renderers`.
