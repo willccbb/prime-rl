@@ -140,6 +140,7 @@ class Dispatcher:
         run_name: str | None,
         policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
+        train_group_budget: int | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -155,6 +156,9 @@ class Dispatcher:
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
+        # Train groups still allowed to open; None is unlimited. The orchestrator
+        # refills it per batch under ``synchronous_groups``.
+        self.train_group_budget = train_group_budget
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -467,6 +471,8 @@ class Dispatcher:
         a ``GroupState``. Returns ``None`` if the source is empty."""
         if kind == "train":
             assert self.train_source is not None
+            if self.train_group_budget == 0:
+                return None
             if self.progress is None:
                 raise RuntimeError("Train dispatch requires progress state")
             request = self.train_source.next_task(step=self.progress.step)
@@ -475,6 +481,8 @@ class Dispatcher:
             request = self.eval_source.next_task()
         if request is None:
             return None
+        if kind == "train" and self.train_group_budget is not None:
+            self.train_group_budget -= 1
 
         env_name = request.env_name
         rollouts = request.rollouts if request.rollouts is not None else envs.get(env_name).config.group_size
@@ -593,14 +601,15 @@ class Dispatcher:
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
-        if task.cancelled():
-            return
+        # The dispatcher pops the tasks it cancels before cancelling them, so a cancelled task here
+        # was cancelled from inside the env request. It fails like any error, so its group still
+        # completes; synchronous_groups waits for every group.
         # Read the exception rather than re-raise it with ``task.result()``: re-raising adds this
         # frame, which holds ``task``, to the exception's traceback, a reference cycle that keeps
         # the env request's frames (and its partial episode) alive until a full garbage collection,
         # which the orchestrator only runs every few hours.
-        exc = task.exception()
-        if isinstance(exc, Exception):
+        exc = asyncio.CancelledError("environment request cancelled") if task.cancelled() else task.exception()
+        if isinstance(exc, (Exception, asyncio.CancelledError)):
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)

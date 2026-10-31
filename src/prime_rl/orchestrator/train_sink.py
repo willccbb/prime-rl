@@ -125,6 +125,8 @@ class TrainSink:
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
+        # Groups finalized toward the batch being collected, for ``synchronous_groups``
+        self.finalized_groups = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
@@ -132,6 +134,8 @@ class TrainSink:
         return self.train_envs.get(env_name).config.group_size
 
     def batch_progress(self) -> tuple[int, int]:
+        if self.config.synchronous_groups is not None:
+            return self.finalized_groups, self.config.synchronous_groups
         return len(self.pending_batch), self.batch_size
 
     def buffered_count(self) -> int:
@@ -187,9 +191,15 @@ class TrainSink:
 
     async def take_batch(self) -> TrainBatch | None:
         """Sweep stale queued traces, then cut a batch if the survivors still
-        meet the threshold."""
+        meet the threshold. With ``synchronous_groups`` the batch is every
+        queued trace, cut once that many groups have finalized."""
         self._drop_stale()
-        return await self.process_batch() if len(self.pending_batch) >= self.batch_size else None
+        if self.config.synchronous_groups is not None:
+            if self.finalized_groups < self.config.synchronous_groups:
+                return None
+            self.finalized_groups = 0
+            return await self.process_batch(len(self.pending_batch))
+        return await self.process_batch(self.batch_size) if len(self.pending_batch) >= self.batch_size else None
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Mask queued tokens past ``max_staleness`` out of the loss and
@@ -248,6 +258,7 @@ class TrainSink:
         cancellation = self.pending_group_cancellations.pop(group_id, None)
         if not group and not failures and cancellation is None:
             return
+        self.finalized_groups += 1
 
         env_name = (
             episode_env_name(group[0]) if group else (failures[0].env_name if failures else cancellation.env_name)
@@ -396,8 +407,8 @@ class TrainSink:
             f"({windows} zero-output batch equivalents)"
         )
 
-    async def process_batch(self) -> TrainBatch:
-        selected = list(self.pending_batch.items())[: self.batch_size]
+    async def process_batch(self, size: int) -> TrainBatch:
+        selected = list(self.pending_batch.items())[:size]
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)

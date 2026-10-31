@@ -72,8 +72,13 @@ def episode(traces, *, group="g", version=0):
     )
 
 
-def sink(*, constant=True, admitted=True, batch_size=100):
-    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
+def sink(*, constant=True, admitted=True, batch_size=100, synchronous_groups=None):
+    config = OrchestratorConfig(
+        batch_size=batch_size,
+        constant_trainer_batch_size=constant,
+        max_staleness=1,
+        synchronous_groups=synchronous_groups,
+    )
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,
@@ -261,5 +266,21 @@ def test_partial_window_and_shutdown_release():
         assert window.attempts == 1
         assert window.metrics.to_dict()["rollout/queued/cancelled"] == 1
         assert s.take_rollout_window(force=True) is None
+
+    asyncio.run(run())
+
+
+def test_synchronous_groups_ship_every_queued_trace_once_all_groups_finalize():
+    async def run():
+        s = sink(batch_size=1, synchronous_groups=3)
+        assert await s.add(episode([trace(), trace()], group="a")) is None
+        assert await s.add(episode([trace(advantage=0)], group="b")) is None
+        assert s.batch_progress() == (2, 3)
+        batch = await s.cancel(GroupCancellation("train", "test", "c", 1, 1, "overload"))
+        assert len(batch.samples) == 2
+        assert batch.cohort.num_traces == 2
+        assert not s.pending_batch
+        assert s.batch_progress() == (0, 3)
+        assert await s.take_batch() is None
 
     asyncio.run(run())
