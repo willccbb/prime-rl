@@ -931,6 +931,10 @@ def setup_model(
     if config.debug.force_balanced_routing:
         apply_force_balanced_routing(model)
 
+    if parallel_dims.ep_enabled and config.lora is not None and config.lora.layout == "tinker":
+        raise ValueError(
+            "LoRA layout 'tinker' shares adapter matrices across experts, which EP would shard; set ep = 1."
+        )
     configure_moe_runtime(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,

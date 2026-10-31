@@ -4,12 +4,23 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.distributed.tensor import DTensor
 
 _LORA_PREFIX = "base_layer."
 
 
 def lora_parameter(*shape: int, like: torch.Tensor) -> nn.Parameter:
     return nn.Parameter(torch.empty(*shape, device=like.device, dtype=like.dtype))
+
+
+def pad_rank(lora_A: torch.Tensor, lora_B: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Zero-pad ``lora_A [..., r, in]`` and ``lora_B [..., out, r]`` to ``rank``; the product is unchanged.
+    Padding gathers sharded tensors first (a collective, like the gather the adapter's export does anyway)."""
+    pad = rank - lora_A.shape[-2]
+    if pad == 0:
+        return lora_A, lora_B
+    lora_A, lora_B = (t.full_tensor() if isinstance(t, DTensor) else t for t in (lora_A, lora_B))
+    return nn.functional.pad(lora_A, (0, 0, 0, pad)), nn.functional.pad(lora_B, (0, pad))
 
 
 class LoRAModule(nn.Module):
@@ -21,10 +32,14 @@ class LoRAModule(nn.Module):
 
     base_layer: nn.Module
 
-    def __init__(self, base_layer: nn.Module, rank: int, alpha: float, dropout: float) -> None:
+    def __init__(
+        self, base_layer: nn.Module, rank: int, alpha: float, dropout: float, export_rank: int | None = None
+    ) -> None:
         super().__init__()
         self.base_layer = base_layer
         self.rank = rank
+        # Rank of the exported adapter: one adapter has one rank, so modules pad up to the largest.
+        self.export_rank = export_rank or rank
         self.alpha = alpha
         self.scaling = alpha / rank
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()

@@ -332,7 +332,7 @@ class SFTConfig(BaseTrainerConfig):
         if self.model.lora is not None:
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True
-                self.inference.vllm.max_lora_rank = self.model.lora.rank
+                self.inference.vllm.max_lora_rank = self.model.lora.export_rank
             else:
                 warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "

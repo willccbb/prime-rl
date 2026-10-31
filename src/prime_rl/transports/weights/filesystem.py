@@ -46,8 +46,9 @@ class FileSystemWeightSender(WeightSender):
                 save_lora_config(
                     model,
                     step_dir,
-                    rank=self.lora_config.rank,
-                    alpha=self.lora_config.alpha,
+                    rank=self.lora_config.export_rank,
+                    # Zero-padding to the export rank keeps the trained scaling alpha / rank.
+                    alpha=self.lora_config.alpha * (self.lora_config.export_rank // self.lora_config.rank),
                     dropout=self.lora_config.dropout,
                 )
         else:
